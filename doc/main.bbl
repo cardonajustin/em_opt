@@ -1,0 +1,26 @@
+\begin{thebibliography}{1}
+
+\bibitem{molesky2020global}
+Sean Molesky, Pengning Chao, Weiliang Jin, and Alejandro~W Rodriguez.
+\newblock Global t operator bounds on electromagnetic scattering: Upper bounds
+  on far-field cross sections.
+\newblock {\em Physical Review Research}, 2(3):033172, 2020.
+
+\bibitem{molesky2020hierarchical}
+Sean Molesky, Pengning Chao, and Alejandro~W Rodriguez.
+\newblock Hierarchical mean-field t operator bounds on electromagnetic
+  scattering: Upper bounds on near-field radiative purcell enhancement.
+\newblock {\em Physical Review Research}, 2(4):043398, 2020.
+
+\bibitem{nakatsukasa2018aaa}
+Yuji Nakatsukasa, Olivier S{\`e}te, and Lloyd~N Trefethen.
+\newblock The aaa algorithm for rational approximation.
+\newblock {\em SIAM Journal on Scientific Computing}, 40(3):A1494--A1522, 2018.
+
+\bibitem{skorski2021modern}
+Maciej Skorski.
+\newblock Modern analysis of hutchinson's trace estimator.
+\newblock In {\em 2021 55th Annual Conference on Information Sciences and
+  Systems (CISS)}, pages 1--5. IEEE, 2021.
+
+\end{thebibliography}
