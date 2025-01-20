@@ -16,7 +16,7 @@ function powm_gpu(A, B, n, s = 0, tol=1e-1, max_iter=1000)
    x ./= norm(x)
    λ_old = 0.0
    M = x-> A(x) - s * B(x)
-   for iter in 1:max_iter
+   for _ in 1:max_iter
 	   v = M(x)
 	   x,_ = B \ v
 	   x ./= norm(x)
@@ -52,9 +52,7 @@ function bicgstab_gpu!(x::AbstractVector, op, b::AbstractVector; preconditioner=
     s = similar(residual)
 
     for num_iter in 1:max_iter
-        if norm(residual) < atol
-            return x, mvp
-        end
+        norm(residual) > atol || return x, mvp
 
         ρ = dot(residual_shadow, residual)
         if num_iter > 1
@@ -70,10 +68,7 @@ function bicgstab_gpu!(x::AbstractVector, op, b::AbstractVector; preconditioner=
         residual -= α*v
         s = deepcopy(residual)
 
-        if norm(residual) < atol
-            x += α*p̂
-            return x, mvp
-        end
+        norm(residual) > atol || x + α*p̂, mvp
 
         ŝ, precon_mvp = preconditioner \ s
         ŝ, precon_mvp = preconditioner \ residual
@@ -85,11 +80,9 @@ function bicgstab_gpu!(x::AbstractVector, op, b::AbstractVector; preconditioner=
         x += α*p̂ + ω*ŝ
         residual -= ω*t
         ρ_prev = ρ
-        if verbose
-			println(num_iter, " ", norm(residual))
-		end
+        !verbose || println(num_iter, " ", norm(residual))
     end
-    throw("BiCGStab did not converge after $max_iter iterations at $x.")
+    error("BiCGStab did not converge after $max_iter iterations at $x.")
 end
 
 function bicgstab_gpu(op, b::AbstractVector; preconditioner=nothing, max_iter::Int=max(1000, length(b)), atol::Real=zero(real(eltype(b))), rtol::Real=eps(real(eltype(b))), verbose::Bool=false)
