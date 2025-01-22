@@ -1,95 +1,67 @@
 module utils
-using CUDA, LinearAlgebra, GilaElectromagnetics, JLD2
-export fun_to_mat, load_greens_operator, powm_gpu
+using CUDA, LinearAlgebra, GilaElectromagnetics, JLD2, BaryRational
+export powm_gpu, bicgstab_gpu, load_greens_operator, pade_root
 
 
-similar_fill(v::AbstractArray{T}, fill_val::T) where T = fill!(similar(v), fill_val)
-similar_fill(v::AbstractArray{T}, dims::NTuple{N, Int}, fill_val::T) where {N, T} = fill!(similar(v, dims), fill_val)
-Base.:\(::Nothing, x::AbstractArray) = (x, 0)
-function lmul_mvp!(y::AbstractVector, ::Nothing, x::AbstractVector)
-	copyto!(y, x)
-	return 0
-end
+function bicgstab_gpu(A, b::CuArray{T}; tol=1e-7, max_iter=length(b)) where T
+    n = length(b)
+    x = CUDA.zeros(T, n)
+    r = b - A(x)
+    r_hat = copy(r)
+    rho_old = 1.0
+    alpha = 1.0
+    omega_old = 1.0
+    v = CUDA.zeros(T, n)
+    p = CUDA.zeros(T, n)
 
-function powm_gpu(A, B, n, s = 0, tol=1e-1, max_iter=1000)
-   x = CUDA.randn(ComplexF64, n)
-   x ./= norm(x)
-   λ_old = 0.0
-   M = x-> A(x) - s * B(x)
-   for _ in 1:max_iter
-	   v = M(x)
-	   x,_ = B \ v
-	   x ./= norm(x)
-	   λ = dot(x, M(x)) / dot(x, B(x))
-	   λ_shifted = λ + s
-	   if abs(λ_shifted - λ_old) < tol
-		   return λ_shifted, x
-	   end
-	   λ_old = λ_shifted
-   end
-   error("Power method did not converge in $max_iter iterations.")
-end
-
-function bicgstab_gpu!(x::AbstractVector, op, b::AbstractVector; preconditioner=nothing, max_iter::Int=max(1000, size(op, 2)), atol::Real=zero(real(eltype(b))), rtol::Real=eps(real(eltype(b))), verbose::Bool=false, initial_zero::Bool=false)
-
-    T = eltype(b)
-
-    mvp = 0
-
-    x = similar_fill(b, zero(T))
-    ρ_prev = zero(T)
-    ω = zero(T)
-    α = zero(T)
-    v = similar_fill(b, zero(T))
-    residual = deepcopy(b)
-    if !initial_zero
-	    residual = b - op(x)
-	    mvp += 1
-    end
-    atol = max(atol, rtol * norm(residual))
-    residual_shadow = deepcopy(residual)
-    p = deepcopy(residual)
-    s = similar(residual)
-
-    for num_iter in 1:max_iter
-        norm(residual) > atol || return x, mvp
-
-        ρ = dot(residual_shadow, residual)
-        if num_iter > 1
-            β = (ρ / ρ_prev) * (α / ω)
-            p = residual + β*(p - ω*v)
+    for iter in 1:max(max_iter, 1000)
+        # println("\t"*string(norm(r)))
+        rho_new = dot(r_hat, r)
+        if iter == 1
+            p = r
+        else
+            beta = (rho_new / rho_old) * (alpha / omega_old)
+            p = r + beta * (p - omega_old * v)
         end
-        p̂, precon_mvp = preconditioner \ p
-        mvp += precon_mvp
-        v = op(p̂)
-        mvp += 1
-        residual_v = dot(residual_shadow, v)
-        α = ρ / residual_v
-        residual -= α*v
-        s = deepcopy(residual)
 
-        norm(residual) > atol || x + α*p̂, mvp
+        v = A(p)
+        alpha = rho_new / dot(r_hat, v)
+        s = r - alpha * v
+        real(norm(s)) > tol || return x + alpha * p, iter
 
-        ŝ, precon_mvp = preconditioner \ s
-        ŝ, precon_mvp = preconditioner \ residual
-        mvp += precon_mvp
-        t = op(ŝ)
-        mvp += 1
-        ω = dot(t, s) / dot(t, t)
-        ω = dot(t, residual) / dot(t, t)
-        x += α*p̂ + ω*ŝ
-        residual -= ω*t
-        ρ_prev = ρ
-        !verbose || println(num_iter, " ", norm(residual))
+        t = A(s)
+        omega_new = dot(t, s) / dot(t, t)
+        x += alpha * p + omega_new * s
+        r = s - omega_new * t
+        real(norm(r)) > tol || return x, iter
+
+        rho_old = rho_new
+        omega_old = omega_new
     end
-    error("BiCGStab did not converge after $max_iter iterations at $x.")
+    error("BiCGStab did not converge: $(norm(r))")
 end
+Base.:\(f::Function, x::CuArray{ComplexF64}) = bicgstab_gpu(f, x)
 
-function bicgstab_gpu(op, b::AbstractVector; preconditioner=nothing, max_iter::Int=max(1000, length(b)), atol::Real=zero(real(eltype(b))), rtol::Real=eps(real(eltype(b))), verbose::Bool=false)
-	x = similar_fill(b, zero(eltype(b)))
-	return bicgstab_gpu!(x, op, b; preconditioner=preconditioner, max_iter=max_iter, atol=atol, rtol=rtol, verbose=verbose, initial_zero=true)
+
+function powm_gpu(A, B, n, s = 0.0, tol::Float64=1e-1, max_iter=1000)
+    x = CUDA.randn(ComplexF64, n)
+    x ./= norm(x)
+    λ_old = 0.0
+    @show s
+    M = x-> A(x) - s * B(x)
+    for _ in 1:max_iter
+        v = M(x)
+        x,_ = B \ v
+        x ./= norm(x)
+
+        λ = dot(x, M(x)) / dot(x, B(x))
+        λ_shifted = λ + s
+
+        abs(λ_shifted - λ_old) > tol || return λ_shifted, x
+        λ_old = λ_shifted
+    end
+    error("power method did not converge")
 end
-Base.:\(f::Function, x::AbstractArray) = bicgstab_gpu(f, x)
 
 
 function load_greens_operator(cells::NTuple{3, Int}, scale::NTuple{3, Rational{Int}}; preload_dir="data")
@@ -107,5 +79,36 @@ function load_greens_operator(cells::NTuple{3, Int}, scale::NTuple{3, Rational{I
     fourier = Array.(operator.mem.egoFur)
     jldsave(fpath; fourier=fourier)
     return operator
+end
+
+
+function pade_root(f::Function, z_init::Float64; max_iter::Int=5, max_restart::Int=5, r::Float64=1.0, tol=eps(Float32))
+    function_evaluations = 0
+    err = 0
+    for _ in 0:max_restart
+		err_init, mvp = f(z_init)
+		function_evaluations += mvp
+		r = min(abs(err_init), r)
+		z = rand(Float64) + z_init + sign(err_init) * r
+		err, mvp = f(z)
+		function_evaluations += mvp
+        domain = [z, z_init]
+        codomain = [err, err_init]        
+        for iter in 1:max_iter
+            a = aaa(domain, codomain, clean=1)
+            poles, _, zeros = prz(a)
+            p = maximum(real.(poles))
+            z = maximum(real.(zeros))
+            err, mvp = f(z)
+            function_evaluations += mvp
+            # println("\t\terr: "*string(err)*" "*string(mvps))
+            domain = vcat(domain, [z])
+            codomain = vcat(codomain, [err])
+            abs(err) > tol || return z, p, iter, function_evaluations
+        end
+        # println("\tPPD did not converge, resampling")
+		z_init = domain[argmin(abs.(codomain))]
+    end
+    error("Pade Zero Finder did not converge")
 end
 end
