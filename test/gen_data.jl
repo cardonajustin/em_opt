@@ -7,19 +7,19 @@ function stat_test(n_samples::Int, n_volume::Int, d::Vector{Vector{Int64}})
     ns = zeros(Int, n_samples)
     mvps = zeros(Int, n_samples)
     prob = OptProblem(n_volume, d)
+    a = rand(Float64, size(prob.d, 1))
+    b = rand(Float64, size(prob.d, 1))
+    g, _ = partial_dual_root(prob, a, b)
     for i in 1:n_samples
         println("Sample " * string(i))
         m = size(prob.G, 2)
-        prob.X = CUDA.Diagonal(ComplexF64(rand(Float64) - 0.5 + 1e-3im * rand(Float64)) .* CUDA.ones(ComplexF64, m))
-        prob.S = CUDA.rand(ComplexF64, m) .- ComplexF64(0.5 + 0.5im)
-        a = rand(Float64, size(prob.d, 1))
-        b = rand(Float64, size(prob.d, 1))
-        g, _ = partial_dual_root(prob, a, b)
-        z, n, mvp = pade_root(x -> partial_dual_constraint(prob, x, a, b)[1:3], g)
-        zs[i] = z
+        a += 1e-2 * rand(Float64, size(prob.d, 1))
+        b += 1e-2 * rand(Float64, size(prob.d, 1))
+        g, _, n, mvp = pade_root(x -> partial_dual_constraint(prob, x, a, b)[1:3], g)
+        zs[i] = g
         ns[i] = n
         mvps[i] = mvp
-        @show z, n, mvp
+        @show g, n, mvp
     end
     return zs, ns, mvps
 end
@@ -27,11 +27,11 @@ end
 
 n_samples = 100
 n_volume = 2
-domains = [[1, 2, 3], [5, 7, 8], [1, 4, 9, 10], [4, 5]]
+domains = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14, 15], [16, 17, 18], [19, 20, 21], [22, 23, 24]]
 a = ones(Float64, size(domains, 1))
 b = ones(Float64, size(domains, 1))
 prob = OptProblem(n_volume, domains)
-partial_dual(prob)
+partial_dual(prob, verbose=true)
 
 # g, _ = partial_dual_root(prob, a, b)
 # Define the function to be differentiated

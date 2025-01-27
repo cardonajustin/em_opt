@@ -1,6 +1,27 @@
 module utils
 using CUDA, LinearAlgebra, GilaElectromagnetics, JLD2, BaryRational
-export fun_to_mat, load_greens_operator, powm_gpu, pade_root
+export sym, asym, load_greens_operator, bicgstab_gpu, powm_gpu, pade_root
+
+sym = M::AbstractMatrix -> 0.5 * (M + M')
+asym = M::AbstractMatrix -> -0.5im * (M - M')
+
+
+function load_greens_operator(cells::NTuple{3, Int}, scale::NTuple{3, Rational{Int}}; preload_dir="data")
+    fname = "$(cells[1])x$(cells[2])x$(cells[3])_$(scale[1].num)ss$(scale[1].den)x$(scale[2].num)ss$(scale[2].den)x$(scale[3].num)ss$(scale[3].den).jld2"
+    fpath = joinpath(preload_dir, fname)
+    if isfile(fpath)
+            file = jldopen(fpath)
+            fourier = CuArray.(file["fourier"])
+            options = GlaKerOpt(true)
+            volume = GlaVol(cells, scale, (0//1, 0//1, 0//1))
+            mem = GlaOprMem(options, volume; egoFur=fourier, setTyp=ComplexF64)
+            return GlaOpr(mem)
+    end
+    operator = GlaOpr(cells, scale; setTyp=ComplexF64, useGpu=true)
+    fourier = Array.(operator.mem.egoFur)
+    jldsave(fpath; fourier=fourier)
+    return operator
+end
 
 
 similar_fill(v::AbstractArray{T}, fill_val::T) where T = fill!(similar(v), fill_val)
@@ -9,25 +30,6 @@ Base.:\(::Nothing, x::AbstractArray) = (x, 0)
 function lmul_mvp!(y::AbstractVector, ::Nothing, x::AbstractVector)
 	copyto!(y, x)
 	return 0
-end
-
-function powm_gpu(A, B, n, s = 0, tol=1e-1, max_iter=1000)
-   x = CUDA.randn(ComplexF64, n)
-   x ./= norm(x)
-   λ_old = 0.0
-   M = x-> A(x) - s * B(x)
-   for _ in 1:max_iter
-	   v = M(x)
-	   x,_ = B \ v
-	   x ./= norm(x)
-	   λ = dot(x, M(x)) / dot(x, B(x))
-	   λ_shifted = λ + s
-	   if abs(λ_shifted - λ_old) < tol
-		   return λ_shifted, x
-	   end
-	   λ_old = λ_shifted
-   end
-   error("Power method did not converge in $max_iter iterations.")
 end
 
 function bicgstab_gpu!(x::AbstractVector, op, b::AbstractVector; preconditioner=nothing, max_iter::Int=max(1000, size(op, 2)), atol::Real=zero(real(eltype(b))), rtol::Real=eps(real(eltype(b))), verbose::Bool=false, initial_zero::Bool=false)
@@ -52,7 +54,7 @@ function bicgstab_gpu!(x::AbstractVector, op, b::AbstractVector; preconditioner=
 
     for num_iter in 1:max_iter
         # println("\t", norm(residual))
-        norm(residual) > atol || return x, mvp
+        norm(residual) > atol || return x
 
         ρ = dot(residual_shadow, residual)
         if num_iter > 1
@@ -68,7 +70,7 @@ function bicgstab_gpu!(x::AbstractVector, op, b::AbstractVector; preconditioner=
         residual -= α*v
         s = deepcopy(residual)
 
-        norm(residual) > atol || return x + α*p̂, mvp
+        norm(residual) > atol || return x + α*p̂
 
         ŝ, precon_mvp = preconditioner \ s
         mvp += precon_mvp
@@ -90,34 +92,33 @@ end
 Base.:\(f::Function, x::AbstractArray) = bicgstab_gpu(f, x)
 
 
-function load_greens_operator(cells::NTuple{3, Int}, scale::NTuple{3, Rational{Int}}; preload_dir="data")
-    fname = "$(cells[1])x$(cells[2])x$(cells[3])_$(scale[1].num)ss$(scale[1].den)x$(scale[2].num)ss$(scale[2].den)x$(scale[3].num)ss$(scale[3].den).jld2"
-    fpath = joinpath(preload_dir, fname)
-    if isfile(fpath)
-            file = jldopen(fpath)
-            fourier = CuArray.(file["fourier"])
-            options = GlaKerOpt(true)
-            volume = GlaVol(cells, scale, (0//1, 0//1, 0//1))
-            mem = GlaOprMem(options, volume; egoFur=fourier, setTyp=ComplexF64)
-            return GlaOpr(mem)
+function powm_gpu(A, B, n, s = 0, tol=1e-1, max_iter=1000)
+    x = CUDA.randn(ComplexF64, n)
+    x ./= norm(x)
+    λ_old = 0.0
+    M = x-> A(x) - s * B(x)
+    for _ in 1:max_iter
+        v = M(x)
+        x = B \ v
+        x ./= norm(x)
+        λ = dot(x, M(x)) / dot(x, B(x))
+        λ_shifted = λ + s
+        if abs(λ_shifted - λ_old) < tol
+            return λ_shifted
+        end
+        λ_old = λ_shifted
     end
-    operator = GlaOpr(cells, scale; setTyp=ComplexF64, useGpu=true)
-    fourier = Array.(operator.mem.egoFur)
-    jldsave(fpath; fourier=fourier)
-    return operator
+    error("Power method did not converge in $max_iter iterations.")
 end
 
 
 function pade_root(f, z_init::Float64; max_iter::Int=5, max_restart::Int=5, r::Float64=1.0, tol=eps(Float32))
-    function_evaluations = 0
     err = 0
     for _ in 0:max_restart
-		err_init, mvp = f(z_init)
-		function_evaluations += mvp
+		err_init = f(z_init)
 		r = min(abs(err_init), r)
 		z = rand(Float64) + z_init + sign(err_init) * r
-		err, mvp = f(z)
-		function_evaluations += mvp
+		err = f(z)
         domain = [z, z_init]
         codomain = [err, err_init]
         for iter in 1:max_iter
@@ -125,10 +126,9 @@ function pade_root(f, z_init::Float64; max_iter::Int=5, max_restart::Int=5, r::F
             poles, _, zeros = prz(a)
             z = maximum(real.(zeros))
             p = maximum(real.(poles))
-            err, mvp = f(z)
-            function_evaluations += mvp
-            abs(err) > tol || return z, p, iter, function_evaluations
-            # println("\t\terr: "*string(err)*" "*string(mvps))
+            err = f(z)
+            abs(err) > tol || return z, p
+            # println("\t\terr: "*string(err))
             domain = vcat(domain, [z])
             codomain = vcat(codomain, [err])
         end
